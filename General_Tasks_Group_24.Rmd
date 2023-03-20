@@ -1,0 +1,314 @@
+---
+title: "General Tasks Group 24"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+# Libraries
+The following packages are relevant for the import and data analysis and must therefore be loaded first.
+```{r message = FALSE, warning = FALSE}
+if(!require("install.load")){
+   install.packages("install.load")
+}
+library('install.load')
+install_load("readr", "dplyr", "plotly", "fitdistrplus")
+```
+
+# 1. Logistics delay
+Logistics is playing an increasingly important role in product development in the automotive industry. For example, parts produced by the supplier must first be delivered to the OEM before they can be installed. What seems logical at first glance should definitely be analyzed in more detail for a professional organization. Therefore, create a distribution for the logistics delay of "Komponente_K7". For this purpose, use the production date from the data record "Komponente_K7.csv" and the goods receipt date from "Logistikverzug_K7.csv". You can assume that the manufacturer will hand over the part to the logistics department on the weekday following the production day. One business day is required for shipment preparation. 
+
+## 1a. Distribution of the logistics delay
+The relevant files are imported and the data type of "Wareneingang" is changed from character to date. 
+```{r message = FALSE, warning = FALSE}
+K7 <- read_csv2("Data/Logistikverzug/Komponente_K7.csv")
+LV_K7 <- read_csv2("Data/Logistikverzug/Logistikverzug_K7.csv")
+
+LV_K7$Wareneingang <- as.Date(LV_K7$Wareneingang, format = "%d.%m.%Y")
+```
+
+
+According to the task, work is performed only on weekdays, so it is necessary to find out what day of the week the production data equals to. As work is only done on weekdays, we only consider Monday to Friday. 
+The newly created column "Produktionstag" contains the numbers 0 to 6, where 0 corresponds to Sunday. If the production day falls on a Friday (5), then the delivery to the logistics department takes will skip the weekend and will take place on Monday. Otherwise the delivery takes place on the next day.
+The same is done with "Uebergabetag", if "Uebergabetag" falls on a Friday, then the expected "Warenausgang" will be the next Monday. The difference between the given date of "Wareneingang" and the calculated "Warenausgang" is used to calculate the logistics delay. Here we can see that there is also a negative delay, i.e. that the goods receipt arrived earlier than planned. Accordingly, negative logistics delay is set to 0.
+```{r message = FALSE, warning = FALSE}
+Logistikverzug <- K7 %>%
+  inner_join(LV_K7, by = "IDNummer") %>%
+  dplyr::select(IDNummer, Produktionsdatum, Wareneingang) %>%
+  mutate(Produktionstag = format(Produktionsdatum, format = "%w")) %>%
+  mutate(Uebergabe = ifelse(Produktionstag == 5, Produktionsdatum+3, Produktionsdatum+1)) %>%
+  mutate(Uebergabe = as.Date(Uebergabe, origin = "1970-01-01")) %>%
+  mutate(Uebergabetag = format(Uebergabe, format = "%w")) %>%
+  mutate(Warenausgang = ifelse(Uebergabetag == 5, Uebergabe+3, Uebergabe+1)) %>%
+  mutate(Warenausgang = as.Date(Warenausgang, origin = "1970-01-01")) %>%
+  mutate(Verzug = as.numeric(Wareneingang-Warenausgang)) %>%
+  mutate(Verzug = ifelse(Verzug < 0, 0, Verzug)) 
+```
+
+
+It is useful to use the summary function to get an overview of the distribution.
+```{r message = FALSE, warning = FALSE}
+summary(Logistikverzug$Verzug)
+```
+This information shows, that "Logistikverzug" is distributed between 0 and 11. The concentration of density is between 2 and 3.
+
+
+For more information the function "descdist" is used. This function computes descriptive parameters of an empirical distribution for non-censored data and provides a skewness-kurtosis plot.
+```{r message = FALSE, warning = FALSE}
+desc_information <- descdist(Logistikverzug$Verzug)
+```
+
+According to this plot, the following distributions need to be considered: Normal, Lognormal and Gamma
+
+As "Verzug" is distributed between 0 and 11, the distributions Lognormal and Gamma cannot be fitted to the data. For these two distributions the values must be greater than 0. Therefore only the normal distribution can be fitted to the data and "fitdist" is used to fit univariate distributions to uncensored data. The function "denscomp" plots the histogram against fitted density functions.
+```{r message = FALSE, warning = FALSE}
+norm_fit <- fitdist(Logistikverzug$Verzug, "norm")
+denscomp(list(norm_fit), legendtext = "Normalverteilung")
+```
+
+Trying to fit the other distributions as well to the data, we need to adjust "Verzug" by adding a small factor. Consequently, all values of "Verzug" are greater than 0 and the distributions can be applied to the data. 
+```{r message = FALSE, warning = FALSE}
+Logistikverzug$Verzug_adj <- Logistikverzug$Verzug + 0.001
+
+norm_fit_adj <- fitdist(Logistikverzug$Verzug_adj, "norm")
+lnorm_fit_adj <- fitdist(Logistikverzug$Verzug_adj, "lnorm")
+gamma_fit_adj <- fitdist(Logistikverzug$Verzug_adj, "gamma")
+
+plot.legend <- c("Normalverteilung","Lognormalverteilung","Gammaverteilung")
+denscomp(list(norm_fit_adj,lnorm_fit_adj, gamma_fit_adj), legendtext = plot.legend)
+```
+The figure "Histogram and theoretical densities" shows that the normal distribution fits the data best. 
+
+For further investigation, the function "gofstat" is used. The goal of this function is to assess the goodness-of-fit process and find out which distribution fits the data best. The results of these tests can help select the best distribution for modeling the data.
+```{r message = FALSE, warning = FALSE}
+gofstat(list(norm_fit_adj, lnorm_fit_adj, gamma_fit_adj), fitnames = plot.legend)
+```
+The statistical tests include the Kolmogorov-Smirnov test, the Cramer-von Mises test and the Anderson-Darling test. It can be observed that the normal distribution performs way better in the Kolmogorov-Smirnov test than the other two distributions. The Cramer-von Mises test and the Anderson-Darling test tend to have higher values for the lognormal distribution and the gamma distribution than for the normal distribution, which could indicate that these two distributions are worse fitted to the data.
+
+The two goodness-of-fit criteria, AIC and BIC, indicate how well the model with the estimated parameters describes the data, taking into account how many parameters were estimated. In general, the lower the values, the better the fit. In this case, the normal distribution has the lowest AIC and BIC, which indicate that it fits the data better than the lognormal and gamma distributions.
+
+In summary, it can be said that the logistic delay is normally distributed.
+
+```{r message = FALSE, warning = FALSE}
+summary(norm_fit)
+```
+
+Lastly, the normal distribution must now be better fitted to the data.
+```{r message = FALSE, warning = FALSE}
+ggplot(Logistikverzug, aes(Verzug)) +
+  geom_histogram(aes(y = ..density..), binwidth = 1) +
+  stat_function(fun = dnorm, args = list(mean = norm_fit$estimate[1], sd = norm_fit$estimate[2]), 
+                color = "blue", size = 1) +
+  labs(title = "Logisitkverzug mit angepasster Normalverteilung", x = "Logistikverzug", y = "Dichte")
+```
+
+## 1b.  Minimum and maximum time between "Warenausgang" and "Wareneingang"
+
+```{r message = FALSE, warning = FALSE}
+max(Logistikverzug$Verzug)
+min(Logistikverzug$Verzug)
+```
+The minimum time between "Warenausgang" and "Wareneingang" is 0 days, whereas the maximum time is 11 days.
+
+## 1c. Mean of the logistics delay
+As an alternative to the mean, the mode or median can be calculated. 
+The mean indicates the average of all values. The mode, on the other hand, indicates the value that occurs most frequently and the median is the value in the middle of a data series ordered by size.
+```{r message = FALSE, warning = FALSE}
+mean(Logistikverzug$Verzug)
+```
+The mean of "Logistikverzug" is 2.52 days.
+
+## 1d. Visualization of the distribution with plotly
+The most suitable way to represent the logistic delay is the histogram.
+```{r message = FALSE, warning = FALSE}
+plot_ly(Logistikverzug, x = ~Verzug, type = "histogram") %>%
+  layout(
+    title = "Verteilung des Logistikverzugs",
+    yaxis = list(title="Häufigkeit"),
+    xaxis = list(title= "Logistikverzug")
+  )
+```
+
+# 2. Advantages of relational database and creation of an entity relationship diagram
+The are several advantages of relational databases when it comes to store data. Firstly, there a a big flexibility in data storage. Having the data stored in a relational database allows you to add, update, or delete tables, relationships, and changes to the data at any time without changing the overall database structure or existing applications. New changes have to be made in one table only while maintaining all correct references.
+
+A second advantage lies in database normalization. Relational databases use the design process of normalization to reduce data redundancy and improve data integrity. There are several structures normalized databases, for example the 1st, 2nd and 3rd normal form.
+
+A third advantage is the consistency in the data. With relational databases no redundancies occur and each data point exists only once since the data is stored uniquely and referenced.
+
+Finally, relational databases allow easy access to data. Several users can query any table in the relational database. Using the joining function to find relationships/relationships in the data is relatively uncomplicated with relational databases, so it allows one to pick on the desired columns and so that only appropriate data will be displayed.
+
+Sources:
+Google. (n.d.). What is a relational database (RDBMS)? google cloud. Google. Retrived March 20, 2023, from https://cloud.google.com/learn/what-is-a-relational-database
+
+Pedamkar, P. (2021, March 4). Relational database advantages: 8 advantages of Relational database. EDUCBA. Retrieved March 20, 2023, from https://www.educba.com/relational-database-advantages/ 
+
+Lo Duca, A. (2021, October 5). Relational vs Non Relational databases. Medium. Retrieved March 20, 2023, from https://towardsdatascience.com/relational-vs-non-relational-databases-f2ac792482e3
+
+What is a relational database? IBM. (n.d.). Retrieved March 20, 2023, from https://www.ibm.com/topics/relational-databases
+
+
+The entity relationship diagram shows what relationships exist in our data. It consists of nine tables. In our model, the entity is shown with its name on top and its attributes listed in the body. Each entity has a primary key, which is a special kind of entity attribute that uniquely defines a record in a database table. In our entity relationship diagram, the arrows point out the primary keys in the table which are used for the joining of the tables.
+```{r pressure, echo=FALSE, out.width = '100%'}
+knitr::include_graphics("Additional_files/ER_diagram.png")
+```
+
+# 3. Data Type of the attributes of the registration table "Zulassungen_aller_Fahrzeuge"
+The table shows that the table "Zulassungen_aller_Fahrzeuge" consists of 4 columns. Directly under the column name you can see the data type. The data type of the first column is "double", the second and third column have the data type "character." Lastly, the fourth column has the data type "date". Additionally the first row of data is displayed.
+```{r message = FALSE, warning = FALSE}
+head(read_csv2("Data/Zulassungen/Zulassungen_alle_Fahrzeuge.csv"),1)
+```
+
+# 4. Linear model for error analysis
+In this section, a linear model from the table "Fahrzeuge_OEM1_Typ11_Fehleranalyse" which sets "Fahrleistung" in relation to suitable variables, will be build.
+
+## 4.1 Data Import and Data Preparation
+The file is imported with read_csv. 
+In addition to the variables from the table "Fahrzeuge_OEM1_Typ11_Fehleranalyse", we want to see if the year and month of production has a correlation with "Fahrleistung". "Produktionsdatum" is calculated by subtracting "days" from "Fehlerhaft_Datum". 
+The size of the engine is specified in small, medium and large, which are now converted to numbers. Small is number 1, medium is number 2 and large is number 3.
+```{r message = FALSE, warning = FALSE}
+OEM1_Typ11_Fehleranalyse <- read_csv("Data/Fahrzeug/Fahrzeuge_OEM1_Typ11_Fehleranalyse.csv") %>%
+  mutate(Produktionsdatum = Fehlerhaft_Datum - days) %>%
+  mutate(Produktionsjahr = as.numeric(format(Produktionsdatum, format = "%Y"))) %>%
+  mutate(Produktionsmonat = as.numeric(format(Produktionsdatum, format = "%m"))) %>%
+  mutate(engine_num = as.numeric(factor(engine, levels = c("small", "medium", "large"), labels = c(1, 2, 3))) )
+```
+
+
+## 4.2 Regression analysis with all variables
+With the function lm we can calculate a linear model with the most suitable parameters.
+All other variables are included in the model except for these three variables:
+- "ID_Fahrzeug" is not considered as it is a unique number
+- "Herstellernummer" is not considered as the number is 1 for all vehicles 
+```{r message = FALSE, warning = FALSE}
+reg_all <- lm(Fehlerhaft_Fahrleistung ~ Werksnummer + Fehlerhaft_Datum + days + fuel + engine_num + Produktionsjahr + Produktionsmonat , data = OEM1_Typ11_Fehleranalyse)
+
+summary(reg_all)
+```
+
+Considering all variables then the model equation can be written as follows: 
+Fehlerhaft_Fahrleistung = -1375000 + 72.35 x Werksnummer - 2.01 x Fehlerhaft_Datum - 1.89 x days + 5252 x fuel - 4713 x engine_num + 711.1 x Produktionsjahr - 56.03 x Produktionsmonat 
+
+### 4.2.1 Summary Interpretation
+The summary displays the content of the model.
+
+1. Residuals: minimum, maximum, and quartiles provide information about the distribution of the residuals
+
+2. Coefficients: estimates the effects of the independent variable on the dependent variable 
+2.1 Intercept: expected value of the dependent variable when all independent variables are zero
+2.2 Estimate of independent variables: the coefficients for the independent variables indicate how a unit increase in each independent variable affects the dependent variable 
+2.3 Std. error and t-value: indicate how reliable the estimates are
+2.4 p-value (Pr(>|t|)): indicates whether the F-statistic is significant
+
+3. Residual standard error: a measure of the average deviation of the observed values from the predicted values of the model.
+
+4. Multiple R-squared: measure of the goodness of fit of the model; indicates how much of the variation in the dependent variable is explained by the independent variables; higher R-squared value means that the model is better at explaining the data
+
+5. Adjusted R-squared: takes the number of independent variables and the sample size into account; indicates how much variation in the dependent variable is explained by the independent variables, taking into account the number of independent variables and sample size.
+
+6. F-Statistic: measure of the overall effect of the independent variables on the dependent variable; higher F-Statistic value means that the independent variables are significant overall
+
+
+### 4.2.2 Recommendations for OEM1
+Based on the results of the linear regression model, there are several recommendations that can be drawn:
+
+1. "Fuel"  has the strongest influence on "Fehlerhaft_Fahrleistung". An increase of one unit in the fuel value leads to an increase of about 5252 units in "Fehlerhaft_Fahrleistung".  --> It could be investigated whether fuel can optimize "Fehlerhaft_Fahrleistung".
+
+2. The regression coefficients for "Engine" is significantly negative. An increase of one unit in "Engine" leads to an decrease of about 4713 units in "Fehlerhaft_Fahrleistung". --> It could be investigated whether the engine size can optimize "Fehlerhaft_Fahrleistung".
+
+3. The other independent variables (Werksnummer, days, Produktionsjahr, Produktionsmonat) also have an effect on "Fehlerhaft_Fahrleistung", but to a lesser extent than the other variables. These variables have a p-value greater than 0.05 and therefore are not significant. --> Further research could be conducted to understand the influence of the other independent variables and derive possible actions to improve "Fehlerhaft_Fahrleistung". Nevertheless, OEM1 should not pay too much attention to these two variables because they are not significant.
+
+
+## 4.3 Regression analysis with significant variables
+The variables "Werksnummer", "days", "Produktionsjahr" and "Produktionsmonat" are not significant, consequently it is possible to remove it from the model.
+```{r message = FALSE, warning = FALSE}
+reg_sig <- lm(Fehlerhaft_Fahrleistung ~ fuel + engine_num, data = OEM1_Typ11_Fehleranalyse)
+summary(reg_sig)
+```
+The summary shows that "fuel" and "engine_num" are still highly significant variables.
+
+Finally, our model equation can be written as follow: 
+Fehlerhaft_Fahrleistung = 25409.79  + 5252.01 x fuel - 4712.32 x engine_num
+
+
+### 4.3.1 Visualization 
+In the following the dependent variable "Fehlerhaft_Fahrleistung" is shown in dependence of the variables "fuel" and "engine_num". 
+```{r message = FALSE, warning = FALSE}
+ggplot(OEM1_Typ11_Fehleranalyse,aes(fuel, Fehlerhaft_Fahrleistung)) +
+  ggtitle("Fehlerhaft_Fahrleistung in depence of fuel") +
+  geom_point(shape = ".") +
+  geom_smooth(method="lm") 
+```
+
+The plot above shows, that "Fahrleistung" depends on "fuel" and the greater the fuel, the better the "Fahrleistung".
+
+
+```{r message = FALSE, warning = FALSE}
+ggplot(OEM1_Typ11_Fehleranalyse,aes(engine_num, Fehlerhaft_Fahrleistung)) +
+  ggtitle("Fehlerhaft_Fahrleistung in depence of engine_num") +
+  geom_point() +
+  scale_x_continuous(breaks = seq(1, 3, 1))
+```
+
+"Fahrleistung" depends on "engine" as "Fahrleistung" is higher with larger engines.
+In the summary of the linear model it says that the coefficient for "engine_num" is negative, but the plot above shows that mileage seems to be proportional to the engine size. Therefore,further examination is necessary and in the next linear model only the variable "engine_num" is considered.
+
+```{r message = FALSE, warning = FALSE}
+reg_engine <- lm(Fehlerhaft_Fahrleistung ~ engine_num, data=OEM1_Typ11_Fehleranalyse)
+summary(reg_engine)
+```
+The summary shows, if only" engine_num" is considered as a variable, then "Fehlerhaft_Fahrleistung" is proportional to "engine_num". 
+
+The fact that the coefficient of "engine_num" in the model with "fuel" is negative implies that the relationship between "engine_num" and "Fehlerhaft_Fahrleistung" is influenced by "fuel". This could indicate that there is an interaction between "engine_num" and "fuel" that affects the relationship between "engine_num" and "Fehlerhaft_Fahrleistung".
+
+```{r message = FALSE, warning = FALSE}
+ggplot(OEM1_Typ11_Fehleranalyse,aes(fuel, Fehlerhaft_Fahrleistung, color = engine)) +
+  ggtitle("Fehlerhaft_Fahrleistung in depence of fuel and engine") +
+  geom_point() +
+  geom_smooth(method="lm", color = "blue") 
+```
+
+The figure shows that with a larger engine more fuel is consumed and the higher both values are then the "Fahrleistung" improves.
+
+### 4.3.2 Fitting the model
+The next step is to check the assumptions and interpret the results. The distribution of the residuals can be shown along the normal Q-Q plot and if there is normality, then the values should follow a straight line.
+
+
+```{r}
+residuals <- reg_sig$residuals
+qqnorm(residuals)
+qqline(residuals)
+```
+
+The plot shows that only a part of the residuals lie in a straight line and consequently, the residuals of the model do not follow a normal distribution. In addition, the summary of the linear model has previously shown that, the maximum value of the residuals is very high (57059), indicating that the model is inaccurate and makes large errors. Therefore, a transformation of the model is necessary.
+
+Further, the calculation of the root mean square error (RMSE) shows how well a function curve is fitted to the available data. The larger the RMSE, the worse the fit of the model. The aim is therefore to obtain the smallest possible RMSE by controlling influencing factors in order to improve the quality of a model.
+```{r}
+res <- c(crossprod(reg_sig$residuals)) 
+RMSE_sig <- sqrt(res / length(reg_sig$residuals))
+RMSE_sig
+```
+The RMSE has a value of 11155.28 and this shows again that the current model is not well fitted to our data. 
+
+Now the transformation is necessary and in this case the dependent variable "Fehlerhaft_Fahrleistung" is logarithmized. 
+```{r message = FALSE, warning = FALSE}
+reg_final <- lm(log(Fehlerhaft_Fahrleistung) ~ fuel + engine_num, data=OEM1_Typ11_Fehleranalyse)
+summary(reg_final)
+```
+Now the summary shows that, the median of the residuals is close to zero. This indicates that the model predicts the data well. The model seems to work well overall, as the residuals are distributed close to zero.
+
+```{r}
+residuals2 <- reg_final$residuals
+qqnorm(residuals2)
+qqline(residuals2)
+```
+
+The plot shows that the majority of the residuals lie in a straight line.
+
+```{r}
+res_final <- c(crossprod(reg_final$residuals)) 
+RMSE_final <- sqrt(res_final / length(reg_final$residuals))
+RMSE_final
+```
+Finally, the RMSE of 0.25 indicates that the model is relatively accurate, predicting actual data values with an average deviation of about 0.25.
